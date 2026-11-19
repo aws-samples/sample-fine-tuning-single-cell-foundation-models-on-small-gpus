@@ -1,0 +1,82 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PassOnlyTheTrainingRoleToSageMaker",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/EXECUTION_ROLE_NAME",
+      "Condition": {"StringEquals": {"iam:PassedToService": "sagemaker.amazonaws.com"}}
+    },
+    {
+      "Sid": "RunAndReadTrainingJobs",
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:CreateTrainingJob",
+        "sagemaker:DescribeTrainingJob",
+        "sagemaker:StopTrainingJob"
+      ],
+      "Resource": "arn:aws:sagemaker:REGION:ACCOUNT_ID:training-job/*"
+    },
+    {
+      "Sid": "ListTrainingJobsAcceptedRiskNoResourceLevelSupport",
+      "Effect": "Allow",
+      "Action": "sagemaker:ListTrainingJobs",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadJobLogs",
+      "Effect": "Allow",
+      "Action": ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:DescribeLogStreams"],
+      "Resource": "arn:aws:logs:REGION:ACCOUNT_ID:log-group:/aws/sagemaker/TrainingJobs:*"
+    },
+    {
+      "Sid": "ResolveImageDigest",
+      "Effect": "Allow",
+      "Action": "ecr:DescribeImages",
+      "Resource": [
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/geneformer-ft",
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/scgpt-ft"
+      ]
+    },
+    {
+      "Sid": "FindTheDefaultBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::sagemaker-REGION-ACCOUNT_ID"
+    },
+    {
+      "Sid": "CheckBucketBaselineForRegulatedData",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketVersioning",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetBucketPolicy"
+      ],
+      "Resource": [
+        "arn:aws:s3:::DATA_BUCKET",
+        "arn:aws:s3:::scgpt-weights-ACCOUNT_ID",
+        "arn:aws:s3:::sagemaker-REGION-ACCOUNT_ID"
+      ]
+    },
+    {
+      "Sid": "DenyUnapprovedInstanceTypes",
+      "Effect": "Deny",
+      "Action": "sagemaker:CreateTrainingJob",
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringNotEquals": {
+          "sagemaker:InstanceTypes": ["ml.g4dn.xlarge", "ml.g5.xlarge", "ml.g5.2xlarge"]
+        }
+      }
+    },
+    {
+      "Sid": "DenyJobsLongerThanTwelveHours",
+      "Effect": "Deny",
+      "Action": "sagemaker:CreateTrainingJob",
+      "Resource": "*",
+      "Condition": {"NumericGreaterThan": {"sagemaker:MaxRuntimeInSeconds": "43200"}}
+    }
+  ]
+}

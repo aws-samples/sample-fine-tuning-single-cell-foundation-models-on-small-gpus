@@ -1,0 +1,62 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Customer-managed KMS key for the scGPT weights bucket (T005, T007). With this key as the
+# bucket's default encryption and the KMS-only bucket policy (s3-bucket-policy.json) on the
+# bucket, writing a weight file needs kms:GenerateDataKey on this key, so S3 write access alone
+# is not enough. It also lets --regulated-data accept the weights bucket, whose baseline check
+# requires SSE-KMS.
+#
+# A separate key from the data key keeps decrypts of weights out of the data key's CloudTrail
+# history, and lets the training job's grant on it be read-only (kms:Decrypt): the job never
+# writes weights. The key policy delegates to IAM in this account, like the data key, so
+# identity policies decide who may use it.
+#
+#   aws cloudformation deploy --stack-name scfm-weights-key --template-file docs/security/weights-key.yaml
+#   aws cloudformation describe-stacks --stack-name scfm-weights-key --query 'Stacks[0].Outputs'
+#
+# The key is retained if the stack is deleted or the key replaced: objects encrypted under it
+# cannot be read without it. A KMS key costs about USD 1 a month plus requests; the bucket key
+# (BucketKeyEnabled) keeps the request count low.
+#
+# Written as plain YAML (no ! tags) so tests can parse it with yaml.safe_load.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: scfm-ft customer-managed KMS key for the scGPT weights bucket.
+
+Parameters:
+  AliasName:
+    Type: String
+    Default: alias/scfm-weights
+    AllowedPattern: "^alias/[a-zA-Z0-9/_-]+$"
+
+Resources:
+  WeightsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: scfm-ft scGPT weights bucket (SSE-KMS default encryption)
+      EnableKeyRotation: true
+      KeySpec: SYMMETRIC_DEFAULT
+      KeyUsage: ENCRYPT_DECRYPT
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableIamPolicies
+            Effect: Allow
+            Principal:
+              AWS: {"Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"}
+            Action: "kms:*"
+            Resource: "*"
+
+  WeightsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: {Ref: AliasName}
+      TargetKeyId: {Ref: WeightsKey}
+
+Outputs:
+  WeightsKeyArn:
+    Description: Pass to put-bucket-encryption, the bucket policy, the execution role's grant and audit-alerts.yaml WeightsKeyArn.
+    Value: {"Fn::GetAtt": [WeightsKey, Arn]}

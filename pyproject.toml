@@ -1,0 +1,96 @@
+[project]
+name = "sc-foundation-ft"
+version = "0.1.0"
+description = "Config-driven CLI for fine-tuning Geneformer on single-cell RNA-seq data"
+readme = "README.md"
+# 3.11+: the patched pillow (>=13.0.0) and filelock (>=4.2.1) releases need it, and a
+# 3.10 floor made uv.lock carry a second, vulnerable resolution for 3.10. The package
+# code itself still runs on 3.10 (the scGPT image installs it there; see
+# sagemaker/Dockerfile.scgpt), which is why ruff still targets py310.
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT-0" }
+dependencies = [
+    # Core ML stack. geneformer itself is installed separately from the cloned
+    # HF repo (it ships pretrained weights + token dictionaries); see README.
+    "torch>=2.1",
+    # transformers 5.x: Geneformer pins 4.46, but 4.46.3 carries the critical
+    # CVE-2026-5241 and most of AR-1's RCE advisories; 5.10 is the lowest release
+    # with every published transformers fix. The Geneformer APIs that 5.x removed are
+    # patched at image build (sagemaker/patches/geneformer_transformers5.py).
+    "transformers>=5.10,<6",
+    # datasets 5.0.1 fixes CVE-2026-66007 and lifts the fsspec<=2024.9 cap that held
+    # fsspec at the CVE-2026-104851 release.
+    "datasets>=5.0.1,<6",
+    "fsspec>=2026.6.0",
+    "accelerate>=0.30",
+    "anndata>=0.10",
+    "scanpy>=1.10",
+    "scikit-learn>=1.3",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "seaborn>=0.13",
+    "pyyaml>=6.0",
+    "pydantic>=2.6",
+    "typer>=0.12",
+    "rich>=13.0",
+    # Geneformer runtime deps (installed with --no-deps from the cloned repo).
+    "tdigest>=0.5.2",
+    "loompy>=3.0",
+    "peft>=0.11.1",
+    # QLoRA 4-bit quantization (opt-in via --quantize). CUDA-only wheels; a no-op
+    # unless a run actually requests quantization.
+    "bitsandbytes>=0.43",
+    "optuna>=3.6",
+    "optuna-integration>=3.6",
+    "statsmodels>=0.14",
+    "tensorboard>=2.15",
+    # Security floors on transitive dependencies (CVE fixes); not imported directly.
+    "pillow>=13.0.0",
+    "filelock>=4.2.1",
+    "certifi>=2026.10.18",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+# scGPT backend: deliberately NOT a project extra. scgpt pins datasets<3.0 and wants
+# its own torch/flash-attn stack, which cannot resolve alongside the core
+# `datasets>=5.0.1` / `transformers>=5.10` floors above (uv cannot declare a conflict
+# between an extra and the base dependencies, so an extra made `uv lock` fail).
+# The scGPT backend ships as its own image: sagemaker/Dockerfile.scgpt installs
+# torch, flash-attn and `scgpt==0.2.1`, then this package with `--no-deps`.
+# To run it locally (CUDA box), use a separate venv:
+#   uv venv .venv-scgpt && uv pip install --python .venv-scgpt scgpt==0.2.1 \
+#       && uv pip install --python .venv-scgpt --no-deps -e .
+
+[project.scripts]
+scfm-ft = "scfm_ft.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scfm_ft"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# B008: typer.Option(...) in argument defaults is the required Typer idiom.
+extend-select = ["I"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/scfm_ft/cli.py" = ["B008"]
+
+# Bandit: `assert` is how pytest expresses checks, so B101 is skipped for test files
+# only; an assert in package code is still reported. Run: bandit -c pyproject.toml -r .
+[tool.bandit.assert_used]
+skips = ["*/tests/*", "*/test_*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

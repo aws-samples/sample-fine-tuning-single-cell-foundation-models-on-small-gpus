@@ -1,0 +1,182 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Private network for --regulated-data training jobs (T003, T006, T007): two subnets whose route
+# table has no internet or NAT route, a security group that allows HTTPS out only to Amazon S3
+# and traffic between instances of the same job, and an S3 gateway endpoint whose policy allows
+# only the project's buckets.
+#
+# Two modes:
+# - New VPC (default): leave ExistingVpcId empty and the stack creates a dedicated VPC.
+# - Existing VPC: set ExistingVpcId and two free subnet CIDRs inside it (SubnetACidr, SubnetBCidr).
+#   The stack adds only its own subnets, route table, endpoint and security group. Other subnets
+#   in that VPC stay reachable over its local route, so the security group limits outbound
+#   traffic to the S3 prefix list; the job also runs under network isolation.
+#
+#   S3PrefixListId: aws ec2 describe-managed-prefix-lists \
+#     --filters Name=prefix-list-name,Values=com.amazonaws.<region>.s3 --query 'PrefixLists[0].PrefixListId' --output text
+#
+#   aws cloudformation deploy --stack-name scfm-training-vpc --template-file docs/security/training-vpc.yaml \
+#     --parameter-overrides DataBucket=<data-bucket> WeightsBucket=<weights-bucket> S3PrefixListId=<pl-...> \
+#       [ExistingVpcId=<vpc-...> SubnetACidr=<cidr> SubnetBCidr=<cidr>]
+#   aws cloudformation describe-stacks --stack-name scfm-training-vpc --query 'Stacks[0].Outputs'
+#
+# Why no other endpoints: SageMaker pulls the training image from ECR and collects the job's
+# CloudWatch logs and metrics itself, outside the VPC, and S3 decrypts SSE-KMS objects on the
+# server side, so the job's network interfaces need to reach only S3. (AWS documentation:
+# "Give SageMaker AI Training Jobs Access to Resources in Your Amazon VPC".) A VPC and a gateway
+# endpoint have no hourly charge. Delete the stack to remove everything it created.
+#
+# Written as plain YAML (no ! tags) so tests can parse it with yaml.safe_load.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: scfm-ft private training subnets - no internet route, HTTPS to S3 only, S3 gateway endpoint limited to the project buckets.
+
+Parameters:
+  DataBucket:
+    Type: String
+    Description: Bucket with training data (train/) and model output (output/).
+  WeightsBucket:
+    Type: String
+    Description: Bucket with the scGPT weights channel.
+  S3PrefixListId:
+    Type: String
+    Description: AWS-managed prefix list for S3 in this region (com.amazonaws.<region>.s3).
+    AllowedPattern: "^pl-[0-9a-f]+$"
+  ExistingVpcId:
+    Type: String
+    Default: ""
+    Description: Put the subnets in this VPC instead of creating one. Leave empty for a new VPC.
+  SubnetACidr:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+    Description: Free CIDR in the existing VPC for subnet A (existing-VPC mode only).
+  SubnetBCidr:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+    Description: Free CIDR in the existing VPC for subnet B (existing-VPC mode only).
+  CidrBlock:
+    Type: String
+    Default: 10.80.0.0/16
+    Description: CIDR of the new VPC (new-VPC mode only).
+
+Conditions:
+  NewVpc: {"Fn::Equals": [{Ref: ExistingVpcId}, ""]}
+
+Rules:
+  ExistingVpcNeedsSubnetCidrs:
+    RuleCondition: {"Fn::Not": [{"Fn::Equals": [{Ref: ExistingVpcId}, ""]}]}
+    Assertions:
+      - Assert: {"Fn::Not": [{"Fn::Equals": [{Ref: SubnetACidr}, ""]}]}
+        AssertDescription: SubnetACidr is required with ExistingVpcId
+      - Assert: {"Fn::Not": [{"Fn::Equals": [{Ref: SubnetBCidr}, ""]}]}
+        AssertDescription: SubnetBCidr is required with ExistingVpcId
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: NewVpc
+    Properties:
+      CidrBlock: {Ref: CidrBlock}
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags: [{Key: Name, Value: scfm-training}]
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    # The CIDR parameter defaults to empty and is used only in existing-VPC mode, where a Rule requires it.
+    Metadata: {cfn-lint: {config: {ignore_checks: [W1030]}}}
+    Properties:
+      VpcId: {"Fn::If": [NewVpc, {Ref: Vpc}, {Ref: ExistingVpcId}]}
+      CidrBlock: {"Fn::If": [NewVpc, {"Fn::Select": [0, {"Fn::Cidr": [{Ref: CidrBlock}, 2, 8]}]}, {Ref: SubnetACidr}]}
+      AvailabilityZone: {"Fn::Select": [0, {"Fn::GetAZs": ""}]}
+      MapPublicIpOnLaunch: false
+      Tags: [{Key: Name, Value: scfm-training-a}]
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    # The CIDR parameter defaults to empty and is used only in existing-VPC mode, where a Rule requires it.
+    Metadata: {cfn-lint: {config: {ignore_checks: [W1030]}}}
+    Properties:
+      VpcId: {"Fn::If": [NewVpc, {Ref: Vpc}, {Ref: ExistingVpcId}]}
+      CidrBlock: {"Fn::If": [NewVpc, {"Fn::Select": [1, {"Fn::Cidr": [{Ref: CidrBlock}, 2, 8]}]}, {Ref: SubnetBCidr}]}
+      AvailabilityZone: {"Fn::Select": [1, {"Fn::GetAZs": ""}]}
+      MapPublicIpOnLaunch: false
+      Tags: [{Key: Name, Value: scfm-training-b}]
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: {"Fn::If": [NewVpc, {Ref: Vpc}, {Ref: ExistingVpcId}]}
+      Tags: [{Key: Name, Value: scfm-training-private}]
+
+  SubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: {Ref: SubnetA}, RouteTableId: {Ref: RouteTable}}
+
+  SubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: {Ref: SubnetB}, RouteTableId: {Ref: RouteTable}}
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: {"Fn::If": [NewVpc, {Ref: Vpc}, {Ref: ExistingVpcId}]}
+      VpcEndpointType: Gateway
+      ServiceName: {"Fn::Sub": "com.amazonaws.${AWS::Region}.s3"}
+      RouteTableIds: [{Ref: RouteTable}]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ProjectBucketsOnly
+            Effect: Allow
+            Principal: "*"
+            Action: [s3:GetObject, s3:PutObject, s3:ListBucket, s3:AbortMultipartUpload]
+            Resource:
+              - {"Fn::Sub": "arn:aws:s3:::${DataBucket}"}
+              - {"Fn::Sub": "arn:aws:s3:::${DataBucket}/*"}
+              - {"Fn::Sub": "arn:aws:s3:::${WeightsBucket}"}
+              - {"Fn::Sub": "arn:aws:s3:::${WeightsBucket}/*"}
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: scfm-ft training jobs - HTTPS to S3 only, traffic between instances of the same job
+      VpcId: {"Fn::If": [NewVpc, {Ref: Vpc}, {Ref: ExistingVpcId}]}
+      SecurityGroupEgress:
+        - Description: HTTPS to Amazon S3 only
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationPrefixListId: {Ref: S3PrefixListId}
+      Tags: [{Key: Name, Value: scfm-training}]
+
+  SameJobIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: {Ref: SecurityGroup}
+      Description: Containers of the same multi-instance job
+      IpProtocol: "-1"
+      SourceSecurityGroupId: {Ref: SecurityGroup}
+
+  SameJobEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: {Ref: SecurityGroup}
+      Description: Containers of the same multi-instance job
+      IpProtocol: "-1"
+      DestinationSecurityGroupId: {Ref: SecurityGroup}
+
+Outputs:
+  SubnetA:
+    Value: {Ref: SubnetA}
+  SubnetB:
+    Value: {Ref: SubnetB}
+  SecurityGroup:
+    Value: {Ref: SecurityGroup}
+  LauncherArgs:
+    Description: Paste into the launcher command
+    Value: {"Fn::Sub": "--subnets ${SubnetA} ${SubnetB} --security-group-ids ${SecurityGroup}"}

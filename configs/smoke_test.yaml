@@ -1,0 +1,45 @@
+# Smoke-test configuration: proves the tokenize -> finetune pipeline runs end to end
+# on synthetic data, CPU-only, in a minute or two. NOT a real training run.
+#
+# num_crossval_splits is 0 (train on all data, no eval) because Geneformer's
+# evaluation forward pass hardcodes .to("cuda") and cannot run on a CPU-only host.
+# On a GPU, use configs/example_cell.yaml (num_crossval_splits: 1) to get held-out
+# metrics + a confusion matrix from the evaluate stage.
+#
+#   uv run scfm-ft make-sample-data --out data/smoke.loom --n-cells 150
+#   uv run scfm-ft finetune --config configs/smoke_test.yaml
+
+name: smoke
+output_dir: outputs/smoke
+
+input:
+  h5ad_path: data/smoke.loom   # .loom or .h5ad; format inferred from suffix
+
+model:
+  preset: V1-10M            # smallest model; input size 2048
+  geneformer_repo: vendor/Geneformer
+
+classifier:
+  kind: cell
+  label_column: cell_type
+  states: null
+  rare_threshold: 0.0
+  max_ncells: null
+  max_ncells_per_class: null
+
+training:
+  epochs: 1
+  learning_rate: 5.0e-5
+  batch_size: 4
+  freeze_layers: 0
+  lr_scheduler_type: linear
+  warmup_steps: 0           # no warmup for a 1-epoch smoke run
+  weight_decay: 0.001
+  num_crossval_splits: 0    # train-only (CPU-safe); eval needs a GPU
+  split_sizes: { train: 1.0, valid: 0.0, test: 0.0 }
+  seed: 42
+
+runtime:
+  nproc: 1
+  ngpu: 0                   # CPU-only
+  forward_batch_size: 16

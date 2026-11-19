@@ -1,0 +1,83 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadInputsAndWeights",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::scgpt-weights-ACCOUNT_ID/scgpt/*",
+        "arn:aws:s3:::DATA_BUCKET/DATA_PREFIX/*"
+      ]
+    },
+    {
+      "Sid": "ListJobCodePrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::sagemaker-REGION-ACCOUNT_ID",
+      "Condition": {"StringLike": {"s3:prefix": ["scfm-ft/*"]}}
+    },
+    {
+      "Sid": "ListWeightsPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::scgpt-weights-ACCOUNT_ID",
+      "Condition": {"StringLike": {"s3:prefix": ["scgpt/*"]}}
+    },
+    {
+      "Sid": "ListDataPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::DATA_BUCKET",
+      "Condition": {"StringLike": {"s3:prefix": ["DATA_PREFIX/*"]}}
+    },
+    {
+      "Sid": "WriteModelOutput",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::sagemaker-REGION-ACCOUNT_ID/scfm-ft/output/*"
+    },
+    {
+      "Sid": "PullTrainingImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchCheckLayerAvailability"
+      ],
+      "Resource": [
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/geneformer-ft",
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/scgpt-ft"
+      ]
+    },
+    {
+      "Sid": "EcrLoginAcceptedRiskNoResourceLevelSupport",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "TrainingJobLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:REGION:ACCOUNT_ID:log-group:/aws/sagemaker/TrainingJobs",
+        "arn:aws:logs:REGION:ACCOUNT_ID:log-group:/aws/sagemaker/TrainingJobs:*"
+      ]
+    },
+    {
+      "Sid": "TrainingJobMetricsAcceptedRiskNoResourceLevelSupport",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {"cloudwatch:namespace": "/aws/sagemaker/TrainingJobs"}
+      }
+    }
+  ]
+}

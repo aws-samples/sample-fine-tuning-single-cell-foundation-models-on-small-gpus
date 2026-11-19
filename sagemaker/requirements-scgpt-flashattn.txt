@@ -1,0 +1,4 @@
+# flash-attn 1.0.9 has no wheels; it is compiled from this hashed sdist against the locked torch.
+# Installed with --no-deps --no-build-isolation after requirements-scgpt.txt.
+flash-attn==1.0.9 \
+    --hash=sha256:7c7e29ce25c6135f7291d39d8ce96481b6de0dc14e85eae73d1e5b6258d43ed9

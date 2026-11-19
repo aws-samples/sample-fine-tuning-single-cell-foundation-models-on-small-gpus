@@ -1,0 +1,41 @@
+# Train-only PBMC3k fine-tune for local CPU/MPS (no CUDA-pinned eval).
+#
+#   uv run scfm-ft load-pbmc3k --out data/pbmc3k.loom
+#   uv run scfm-ft finetune --config configs/pbmc3k_mps.yaml
+#
+# num_crossval_splits: 0 skips Geneformer's CUDA-pinned eval forward pass, so this
+# runs on Apple-silicon MPS / CPU. max_ncells caps the cell count to keep memory
+# bounded on a laptop; remove it (and run on a GPU with num_crossval_splits: 1) for
+# a full run with held-out metrics.
+
+name: pbmc3k_mps
+
+input:
+  h5ad_path: data/pbmc3k.loom
+
+model:
+  preset: V1-10M
+  geneformer_repo: vendor/Geneformer
+
+classifier:
+  kind: cell
+  label_column: cell_type
+  rare_threshold: 0.0
+  max_ncells: 1000          # cap for a laptop; raise/remove on a bigger machine
+
+training:
+  epochs: 1
+  learning_rate: 5.0e-5
+  batch_size: 8
+  freeze_layers: 0
+  num_crossval_splits: 0    # train-only -> MPS/CPU friendly
+  split_sizes:
+    train: 1.0
+    valid: 0.0
+    test: 0.0
+  seed: 42
+
+runtime:
+  nproc: 4
+  ngpu: 0
+  forward_batch_size: 50

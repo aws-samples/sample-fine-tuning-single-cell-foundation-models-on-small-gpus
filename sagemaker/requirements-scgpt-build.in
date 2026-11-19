@@ -1,0 +1,10 @@
+# Build tools for source-only packages in the scGPT image (installed with
+# --no-build-isolation so nothing is fetched unhashed at build time). Regenerate:
+#   uv pip compile sagemaker/requirements-scgpt-build.in -o sagemaker/requirements-scgpt-build.txt \
+#     --python-version 3.10 --python-platform x86_64-manylinux_2_35 --generate-hashes --allow-unsafe
+# < 82: torch 2.0.1's torch/utils/cpp_extension.py (used to build flash-attn 1.0.9) does
+# `from pkg_resources import packaging`, and setuptools 82+ no longer ships pkg_resources.
+setuptools<82
+wheel
+packaging
+hatchling

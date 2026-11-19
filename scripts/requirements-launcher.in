@@ -1,0 +1,16 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Direct dependencies of the launcher venv that scripts/do-fine-tuning-job.sh builds.
+# That venv runs on the operator's workstation with their AWS credentials and uploads
+# nothing the job executes, but it still talks to AWS as the operator, so everything in it
+# is installed from the hash-locked requirements-launcher.txt (--require-hashes).
+#
+# The v2 SageMaker SDK is required: the v3 SDK dropped sagemaker.estimator, which
+# sagemaker/launch.py imports.
+#
+# Regenerate requirements-launcher.txt after changing this file:
+#   uv pip compile scripts/requirements-launcher.in --universal --python-version 3.11 \
+#       --generate-hashes -o scripts/requirements-launcher.txt
+sagemaker==2.219.0
+boto3

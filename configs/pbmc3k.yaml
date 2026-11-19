@@ -1,0 +1,42 @@
+# Fine-tune on the real 10x PBMC3k dataset (cell-type classification).
+#
+# First fetch the data:
+#   uv run scfm-ft load-pbmc3k --out data/pbmc3k.loom
+# Then run (GPU recommended for the eval/validate path — see docs/SAGEMAKER.md):
+#   uv run scfm-ft run --config configs/pbmc3k.yaml
+#
+# NOTE: num_crossval_splits >= 1 runs Geneformer's eval forward pass, which is
+# CUDA-pinned in this version. On a CPU/MPS-only box set num_crossval_splits: 0
+# (train-only) or run on a GPU instance.
+
+name: pbmc3k
+
+input:
+  h5ad_path: data/pbmc3k.loom   # loom is fine; the key name is historical
+
+model:
+  preset: V1-10M                 # fits a laptop dGPU / small GPU; bump to V2-104M on A10G+
+  geneformer_repo: vendor/Geneformer
+
+classifier:
+  kind: cell
+  label_column: cell_type        # the real Louvain cell types from the loader
+  rare_threshold: 0.0
+  max_ncells: null
+
+training:
+  epochs: 10
+  learning_rate: 5.0e-5
+  batch_size: 12
+  freeze_layers: 0
+  num_crossval_splits: 1         # held-out eval (needs GPU); use 0 for CPU/MPS train-only
+  split_sizes:
+    train: 0.7
+    valid: 0.15
+    test: 0.15
+  seed: 42
+
+runtime:
+  nproc: 4
+  ngpu: 1
+  forward_batch_size: 100

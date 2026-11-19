@@ -1,0 +1,20 @@
+# Keep the SageMaker build context small. The Dockerfile only needs
+# pyproject.toml, README.md, src/, and sagemaker/sm_entry.py; Geneformer and
+# its weights are cloned+materialized inside the image at build time, so none
+# of the local heavyweight trees belong in the context.
+.venv/
+data/
+outputs/
+vendor/
+docs/
+tests/
+scripts/
+configs/
+.git/
+.ruff_cache/
+.pytest_cache/
+**/__pycache__/
+*.pyc
+*.loom
+*.h5ad
+*.dataset

@@ -1,0 +1,292 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Email alerts for changes that weaken this project's protections, and for access to the
+# data bucket by anyone other than the training job (T010). Deploy in the region where the
+# buckets, keys and CloudTrail trail live (IAM events are delivered only in us-east-1):
+#
+#   aws cloudformation deploy --stack-name scfm-audit-alerts \
+#     --template-file docs/security/audit-alerts.yaml \
+#     --parameter-overrides AlertEmail=<you@example.com> DataBucket=<data-bucket> \
+#       ProtectedBuckets=<data-bucket>,<weights-bucket>,<source-bucket>,<default-bucket>,<log-bucket> \
+#       DataKeyArn=<kms-key-arn> WeightsBucket=<weights-bucket>
+#
+# Then confirm the subscription email SNS sends. Delete the stack to remove everything.
+#
+# How it works: CloudTrail delivers write management events to the default EventBridge bus
+# without any trail, and S3 object (data) events only when a trail records them, so the
+# data-access and weights rules need a trail with S3 data events on DataBucket and
+# WeightsBucket (see aws-baseline.md section 5). Each rule sends the raw CloudTrail event to one
+# SNS topic.
+#
+# The topic is not KMS-encrypted: EventBridge cannot publish to a topic encrypted with the
+# AWS-managed aws/sns key, and the messages carry API metadata (names, ARNs, source IPs), not
+# data. Use a customer-managed key whose policy allows events.amazonaws.com if that matters.
+#
+# Written as plain YAML (no ! tags) so tests can parse it with yaml.safe_load.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: scfm-ft audit alerts (T010) - EventBridge rules on CloudTrail events to an SNS email topic.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Address that receives the alerts. SNS sends a confirmation email first.
+  DataBucket:
+    Type: String
+    Description: Bucket that holds the training data. Object access by anyone other than the execution role alerts.
+  ProtectedBuckets:
+    Type: CommaDelimitedList
+    Description: Buckets whose policy, encryption, versioning or public-access settings must not change unnoticed.
+  DataKeyArn:
+    Type: String
+    Description: ARN of the customer-managed KMS key that encrypts the data bucket.
+  WeightsBucket:
+    Type: String
+    Default: ""
+    Description: Bucket that holds the scGPT weights channel. Any object written or deleted there alerts; leave empty to skip the rule.
+  WeightsKeyArn:
+    Type: String
+    Default: ""
+    Description: ARN of the weights bucket's KMS key (weights-key.yaml), watched like the data key; leave empty if there is none.
+  ExecutionRoleName:
+    Type: String
+    Default: GeneformerSageMakerExecution
+  WatchedRoleNames:
+    Type: CommaDelimitedList
+    Default: GeneformerSageMakerExecution,geneformer-codebuild-role,GeneformerLauncher
+    Description: IAM roles whose policies or trust policy must not change unnoticed.
+  RepositoryNames:
+    Type: CommaDelimitedList
+    Default: geneformer-ft,scgpt-ft
+  BuildProjectName:
+    Type: String
+    Default: geneformer-ft-build
+
+Conditions:
+  HasWeightsBucket: {"Fn::Not": [{"Fn::Equals": [{Ref: WeightsBucket}, ""]}]}
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    # checkov:skip=CKV_AWS_26: EventBridge cannot publish to an aws/sns-encrypted topic; alerts carry API metadata only (see header)
+    Properties:
+      TopicName: scfm-audit-alerts
+      Subscription:
+        - Protocol: email
+          Endpoint: {Ref: AlertEmail}
+
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [{Ref: AlertTopic}]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EventBridgeRulesInThisStackOnly
+            Effect: Allow
+            Principal: {Service: events.amazonaws.com}
+            Action: sns:Publish
+            Resource: {Ref: AlertTopic}
+            Condition:
+              ArnLike:
+                aws:SourceArn: {"Fn::Sub": "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/scfm-alert-*"}
+
+  BucketProtectionChanged:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: scfm-alert-bucket-protection-changed
+      Description: Bucket policy, encryption, versioning, public access, ACL, ownership, lifecycle, replication or Object Lock settings changed, or a bucket was deleted.
+      EventPattern:
+        source: [aws.s3]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [s3.amazonaws.com]
+          eventName:
+            - PutBucketPolicy
+            - DeleteBucketPolicy
+            - PutBucketEncryption
+            - DeleteBucketEncryption
+            - PutBucketVersioning
+            - PutBucketPublicAccessBlock
+            - DeleteBucketPublicAccessBlock
+            - PutBucketAcl
+            - PutBucketOwnershipControls
+            - DeleteBucketOwnershipControls
+            - PutBucketLifecycle
+            - PutBucketReplication
+            # CloudTrail records the PutObjectLockConfiguration API under this name.
+            - PutBucketObjectLockConfiguration
+            - DeleteBucket
+          requestParameters:
+            bucketName: {Ref: ProtectedBuckets}
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+  DataAccessedOutsideJob:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: scfm-alert-data-accessed-outside-job
+      Description: An object in the data bucket was read, written, deleted, listed or had its metadata read by a principal other than the training job's execution role, or by a caller with no IAM ARN (an AWS service, another account, or anonymous).
+      EventPattern:
+        source: [aws.s3]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [s3.amazonaws.com]
+          eventName:
+            - GetObject
+            - PutObject
+            - CopyObject
+            - CompleteMultipartUpload
+            - DeleteObject
+            - DeleteObjects
+            - RestoreObject
+            # Metadata and listing: object names, sizes and tags can be sensitive on their own.
+            - HeadObject
+            - ListObjects
+            - ListObjectVersions
+          requestParameters:
+            bucketName: [{Ref: DataBucket}]
+          # anything-but never matches a missing field, and CloudTrail records no userIdentity.arn
+          # for AWS services (type AWSService), other accounts and anonymous callers (type
+          # AWSAccount), so the second branch catches those.
+          $or:
+            - userIdentity:
+                arn:
+                  - anything-but:
+                      prefix: {"Fn::Sub": "arn:aws:sts::${AWS::AccountId}:assumed-role/${ExecutionRoleName}/"}
+            - userIdentity:
+                arn: [{exists: false}]
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+  WeightsChanged:
+    Type: AWS::Events::Rule
+    Condition: HasWeightsBucket
+    Properties:
+      Name: scfm-alert-weights-changed
+      Description: An object in the weights bucket was written or deleted, by anyone. The training job only reads it.
+      EventPattern:
+        source: [aws.s3]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [s3.amazonaws.com]
+          eventName:
+            - PutObject
+            - CopyObject
+            - CompleteMultipartUpload
+            - DeleteObject
+            - DeleteObjects
+          requestParameters:
+            bucketName: [{Ref: WeightsBucket}]
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+  AuditTrailChanged:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: scfm-alert-audit-trail-changed
+      Description: A CloudTrail trail was stopped, deleted or reconfigured.
+      EventPattern:
+        source: [aws.cloudtrail]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [cloudtrail.amazonaws.com]
+          eventName: [StopLogging, DeleteTrail, UpdateTrail, PutEventSelectors, PutInsightSelectors]
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+  DataKeyChanged:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: scfm-alert-data-key-changed
+      Description: The data key or the weights key was disabled, scheduled for deletion, had rotation turned off, or its policy changed.
+      EventPattern:
+        source: [aws.kms]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [kms.amazonaws.com]
+          eventName: [DisableKey, ScheduleKeyDeletion, DisableKeyRotation, PutKeyPolicy]
+          resources:
+            ARN: [{Ref: DataKeyArn}, {Ref: WeightsKeyArn}]
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+  RolePermissionsChanged:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: scfm-alert-role-permissions-changed
+      Description: A policy was attached to, detached from, added to or removed from a watched role, or its trust policy changed.
+      EventPattern:
+        source: [aws.iam]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [iam.amazonaws.com]
+          eventName:
+            - AttachRolePolicy
+            - DetachRolePolicy
+            - PutRolePolicy
+            - DeleteRolePolicy
+            - UpdateAssumeRolePolicy
+            - PutRolePermissionsBoundary
+            - DeleteRolePermissionsBoundary
+            - DeleteRole
+          requestParameters:
+            roleName: {Ref: WatchedRoleNames}
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+  ImageRepositoryChanged:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: scfm-alert-image-repository-changed
+      Description: Tag immutability, scanning, repository policy or lifecycle changed, images were deleted, or a repository was deleted.
+      EventPattern:
+        source: [aws.ecr]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [ecr.amazonaws.com]
+          eventName:
+            - PutImageTagMutability
+            - PutImageScanningConfiguration
+            - SetRepositoryPolicy
+            - DeleteRepositoryPolicy
+            - PutLifecyclePolicy
+            - BatchDeleteImage
+            - DeleteRepository
+          requestParameters:
+            repositoryName: {Ref: RepositoryNames}
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+  BuildProjectChanged:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: scfm-alert-build-project-changed
+      Description: The image build project was changed (for example SCAN_FAIL_ON removed) or deleted.
+      EventPattern:
+        source: [aws.codebuild]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [codebuild.amazonaws.com]
+          eventName: [UpdateProject, DeleteProject]
+          # CloudTrail records the project as its ARN even when the caller passed the name
+          # (seen live on 2026-11-18), so match both forms.
+          requestParameters:
+            name:
+              - {Ref: BuildProjectName}
+              - {"Fn::Sub": "arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/${BuildProjectName}"}
+      Targets:
+        - Id: sns
+          Arn: {Ref: AlertTopic}
+
+Outputs:
+  AlertTopicArn:
+    Value: {Ref: AlertTopic}

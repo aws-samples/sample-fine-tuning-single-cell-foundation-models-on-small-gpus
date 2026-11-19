@@ -1,0 +1,33 @@
+# Direct dependencies of the scGPT training image (sagemaker/Dockerfile.scgpt).
+# The Dockerfile installs from requirements-scgpt.txt, the fully resolved, hash-locked
+# form of this file. Regenerate it after editing this file:
+#
+#   uv pip compile sagemaker/requirements-scgpt.in -o sagemaker/requirements-scgpt.txt \
+#     --python-version 3.10 --python-platform x86_64-manylinux_2_35 --generate-hashes \
+#     --index-strategy unsafe-best-match \
+#     --extra-index-url https://download.pytorch.org/whl/cu117
+#
+# torch is the cu117 build flash-attn is compiled against; the +cu117 local version
+# exists only on the PyTorch index, which is why that index is listed.
+torch==2.0.1+cu117
+# scgpt requires torchtext with NO version and pip otherwise picks 0.16.2, which pins
+# torch==2.1.2 and replaces the torch above, silently breaking flash-attn. 0.15.2
+# requires torch==2.0.1. torchdata 0.6.1 pairs with torch 2.0.1.
+torchtext==0.15.2
+torchdata==0.6.1
+scgpt==0.2.1
+# flash-attn 1.0.9 imports einops at runtime; flash-attn itself is built from source
+# against the torch above and installed separately (see Dockerfile.scgpt).
+einops
+# scGPT's utils/util.py does an UNCONDITIONAL `from IPython import get_ipython`.
+ipython
+# torch 2.0.1 (cu117) is compiled against the NumPy 1.x ABI.
+numpy<2
+# What the shared scfm_ft package needs when installed with --no-deps.
+pydantic
+typer
+rich
+pyyaml
+loompy
+# SageMaker's training-container entry-point runtime.
+sagemaker-training

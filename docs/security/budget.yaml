@@ -1,0 +1,58 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Monthly AWS Budget on SageMaker spend, with email alerts (T009, T011). Deploy it in your own
+# account with your own address and limit:
+#
+#   aws cloudformation deploy --stack-name scfm-budget --template-file docs/security/budget.yaml \
+#     --region us-east-1 --parameter-overrides AlertEmail=<you@example.com> MonthlyLimitUsd=<limit>
+#
+# Budgets email the address directly; there is no subscription to confirm. Spend data updates a
+# few times a day, so this catches a runaway month, not a single job (the launcher's 12-hour
+# runtime cap bounds one job). Deploying needs billing access (budgets:ModifyBudget). Delete the
+# stack to remove the budget.
+#
+# Written as plain YAML (no ! tags) so tests can parse it with yaml.safe_load.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: scfm-ft monthly SageMaker budget (T009, T011) with email alerts.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Address that receives the budget alerts.
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: must be an email address.
+  MonthlyLimitUsd:
+    Type: Number
+    Description: Monthly SageMaker spend, in US dollars, that the alerts are measured against.
+    MinValue: 1
+  BudgetName:
+    Type: String
+    Default: scfm-sagemaker-monthly
+    Description: Name of the budget. Must be unique in the account.
+
+Resources:
+  SageMakerMonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: {Ref: BudgetName}
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: {Ref: MonthlyLimitUsd}
+          Unit: USD
+        CostFilters:
+          Service: [Amazon SageMaker]
+      NotificationsWithSubscribers:
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: {Ref: AlertEmail}}]
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: {Ref: AlertEmail}}]
+        - Notification: {NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: {Ref: AlertEmail}}]
+
+Outputs:
+  BudgetName:
+    Value: {Ref: BudgetName}

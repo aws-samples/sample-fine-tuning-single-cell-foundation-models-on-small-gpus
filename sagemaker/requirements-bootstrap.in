@@ -1,0 +1,4 @@
+# uv, installed with pip into the Geneformer image before everything else is installed by uv.
+# Regenerate: uv pip compile sagemaker/requirements-bootstrap.in -o sagemaker/requirements-bootstrap.txt \
+#     --python-version 3.10 --python-platform x86_64-manylinux_2_35 --generate-hashes
+uv==0.13.7

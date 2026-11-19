@@ -1,0 +1,9 @@
+# The SageMaker training toolkit that runs sm_entry.py in the Geneformer image. It is not part of
+# uv.lock (it pulls a web stack the project does not use), so it has its own hash-locked file.
+# Versions that uv.lock also pins are held to the uv.lock versions with a constraints file, so
+# installing this file never changes a package the project is tested with. Regenerate:
+#   uv export --frozen --no-emit-project --no-hashes --format requirements-txt -o /tmp/constraints.txt
+#   uv pip compile sagemaker/requirements-toolkit.in -c /tmp/constraints.txt \
+#     -o sagemaker/requirements-toolkit.txt --python-version 3.11 \
+#     --python-platform x86_64-manylinux_2_35 --generate-hashes
+sagemaker-training

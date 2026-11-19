@@ -1,0 +1,55 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteBuildLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": [
+        "arn:aws:logs:REGION:ACCOUNT_ID:log-group:/aws/codebuild/geneformer-ft-build",
+        "arn:aws:logs:REGION:ACCOUNT_ID:log-group:/aws/codebuild/geneformer-ft-build:*"
+      ]
+    },
+    {
+      "Sid": "ReadBuildSourceZip",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+      "Resource": "arn:aws:s3:::SOURCE_BUCKET/geneformer-src.zip"
+    },
+    {
+      "Sid": "PushAndInspectTrainingImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:DescribeImages",
+        "ecr:DescribeImageScanFindings",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:StartImageScan",
+        "ecr:UploadLayerPart"
+      ],
+      "Resource": [
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/geneformer-ft",
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/scgpt-ft"
+      ]
+    },
+    {
+      "Sid": "ManageTrainingImageRepositories",
+      "Effect": "Allow",
+      "Action": ["ecr:CreateRepository", "ecr:DescribeRepositories"],
+      "Resource": [
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/geneformer-ft",
+        "arn:aws:ecr:REGION:ACCOUNT_ID:repository/scgpt-ft"
+      ]
+    },
+    {
+      "Sid": "EcrLoginTokenAcceptedRiskWholeResource",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    }
+  ]
+}

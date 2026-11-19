@@ -1,0 +1,55 @@
+# Fine-tune scGPT on the real 10x PBMC3k dataset (cell-type classification).
+#
+# This sits beside configs/pbmc3k.yaml; only `model.backend`, the preset, and the
+# `scgpt:` block differ — the training split discipline, label column and
+# hyperparameters are the SHARED, model-neutral settings, so Geneformer-vs-scGPT
+# numbers on this dataset are directly comparable.
+#
+# First fetch the data (same loader as Geneformer):
+#   uv run scfm-ft load-pbmc3k --out data/pbmc3k.loom
+# Then run (GPU required — scGPT's transformer loop needs CUDA):
+#   uv run scfm-ft run --config configs/pbmc3k_scgpt.yaml
+#
+# The scGPT pretrained checkpoint (model.pt / args.json / vocab.json) must be
+# available under scgpt.model_root/<preset dir>, or point model.checkpoint_dir at it.
+
+name: pbmc3k-scgpt
+
+input:
+  h5ad_path: data/pbmc3k.loom    # loom is fine; the key name is historical
+
+model:
+  backend: scgpt
+  preset: scgpt-human            # scgpt-human | scgpt-blood | scgpt-cp
+  # checkpoint_dir: /scgpt/scGPT_human   # optional explicit override
+
+scgpt:
+  model_root: /scgpt             # holds the per-preset checkpoint subdirectories
+  n_input_bins: 51               # expression value-binning resolution
+  use_flash_attn: true           # FlashAttention kernels (scgpt-ft image); falls back
+                                 # to vanilla attention if CUDA/flash-attn unavailable
+  grad_checkpointing: false      # activation checkpointing: trade compute for memory
+                                 # (lets a bigger batch fit); on when memory-bound
+  freeze_backbone: false         # true = train only the classification head
+  do_mvc: false                  # optional masked-value-prediction auxiliary loss
+
+classifier:
+  kind: cell
+  label_column: cell_type        # the real Louvain cell types from the loader
+
+training:
+  epochs: 10
+  learning_rate: 5.0e-5
+  batch_size: 12
+  freeze_layers: 0               # (geneformer-only knob; ignored by scgpt)
+  num_crossval_splits: 1         # held-out eval
+  split_sizes:                   # SAME split as configs/pbmc3k.yaml -> comparable
+    train: 0.7
+    valid: 0.15
+    test: 0.15
+  seed: 42
+
+runtime:
+  nproc: 4
+  ngpu: 1
+  forward_batch_size: 100

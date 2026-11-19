@@ -1,0 +1,139 @@
+# scgpt-ft SageMaker training image.
+#
+# Per-backend image (COMBO.md §7 option 1): scGPT's dependency stack — a torch
+# matching flash-attn, scgpt itself, and flash-attn — is isolated from the
+# Geneformer image so the two never fight over versions (Geneformer's image runs
+# transformers 5 and torch 2.14; scGPT needs torch 2.0.1 + flash-attn 1.0.9). The shared `scfm_ft` package (the CLI,
+# config, backend registry) is installed on top WITHOUT its Geneformer-pinned
+# dependency set — see the `--no-deps` note below — so this image carries scGPT's
+# stack, not Geneformer's.
+#
+# CodeBuild (BACKEND=scgpt IMAGE_REPO_NAME=scgpt-ft) tags b<N> after the scan gate; a manual push skips it:
+#   docker build -f sagemaker/Dockerfile.scgpt -t scgpt-ft:manual-<stamp> .
+#   aws ecr get-login-password --region <r> | docker login --username AWS --password-stdin <acct>.dkr.ecr.<r>.amazonaws.com
+#   docker tag scgpt-ft:manual-<stamp> <acct>.dkr.ecr.<r>.amazonaws.com/scgpt-ft:manual-<stamp>
+#   docker push <acct>.dkr.ecr.<r>.amazonaws.com/scgpt-ft:manual-<stamp>
+# Launch with: python sagemaker/launch.py --backend scgpt --preset scgpt-human \
+#   --image-uri <acct>.dkr.ecr.<r>.amazonaws.com/scgpt-ft:b<N> ...
+
+# CUDA 11.7 devel (flash-attn needs nvcc at build time; scGPT's reference stack
+# is built against cu117 + torch 2.0.x). devel (not runtime) so flash-attn compiles.
+# Runs as root on purpose: AWS documents that SageMaker expects training containers to run
+# as root, and /opt/ml (input data, model output, failure file) is mounted root-owned, so a
+# non-root USER would likely fail writing the model artifacts (not tested here). SageMaker
+# remaps container uid 0 to an unprivileged uid on the host instance. The remaining risk is
+# AR-4 in docs/security/accepted-risks.md; jobs on S3 data run under network isolation.
+# checkov:skip=CKV_DOCKER_3: SageMaker training requires root in-container (see above)
+# From NVIDIA's registry (nvcr.io), not Docker Hub, to avoid its anonymous pull limit on
+# CodeBuild's shared IPs; same image as docker.io/nvidia/cuda:11.7.1-devel-ubuntu22.04
+# (identical digest), pinned so every build uses exactly it.
+FROM nvcr.io/nvidia/cuda:11.7.1-devel-ubuntu22.04@sha256:18aade8cf02eede9d4db5d8a8a73d4505bb2322e91cd54e4c601e5ae100ed691
+
+# A training job is a run-to-completion process, not a service: SageMaker tracks it by
+# exit code and never runs Docker health checks. Declared explicitly so it's a choice.
+HEALTHCHECK NONE
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    SAGEMAKER_PROGRAM=sm_entry.py \
+    # In-container root holding the scGPT preset checkpoint subdirectories
+    # (scGPT_human/, scGPT_bc/, ...), each with model.pt/args.json/vocab.json.
+    SCGPT_MODEL_ROOT=/scgpt \
+    TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6"
+
+# Pick up Ubuntu security fixes that landed after the base image was built (the
+# scanner's critical findings are openssl, krb5, gnutls, glibc). The NVIDIA packages are
+# held so the CUDA, cuDNN and NCCL libraries stay exactly as the base image ships them.
+RUN apt-get update \
+    && dpkg-query -W -f='${Package}\n' | grep -E '^(cuda-|libcublas|libcufft|libcufile|libcurand|libcusolver|libcusparse|libcudnn|libnccl|libnpp|libnvj|libnvinfer|nvidia-)' | xargs -r apt-mark hold \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 python3-dev python3-pip git git-lfs build-essential ninja-build \
+    && git lfs install \
+    && rm -rf /var/lib/apt/lists/*
+
+# Every third-party package below is installed from a hash-locked requirements file
+# (--require-hashes), so a build installs exactly the artifacts that were reviewed.
+# Regenerate the locks with the uv pip compile commands in the .in files' headers.
+#   requirements-scgpt-build.txt     build tools for source-only packages
+#   requirements-scgpt.txt           torch 2.0.1+cu117, torchtext 0.15.2, scgpt 0.2.1 and
+#                                    everything they pull in (transitive deps included)
+#   requirements-scgpt-flashattn.txt flash-attn 1.0.9 sdist
+# Pinning torchtext/torchdata matters: scgpt requires torchtext with NO version, and an
+# unpinned resolve picks 0.16.2, which pins torch==2.1.2 and REPLACES the torch that
+# flash-attn is compiled against. flash-attn's CUDA extension then fails to load and
+# scGPT silently falls back to standard attention.
+#
+# Ubuntu's own pip is used as is: upgrading it would be an unhashed download.
+COPY sagemaker/requirements-scgpt-build.txt sagemaker/requirements-scgpt.txt sagemaker/requirements-scgpt-flashattn.txt /tmp/locks/
+
+# Build tools first; five dependencies are source-only (cell-gears, docrep,
+# inotify-simple, loompy, sagemaker-training), so they build with --no-build-isolation
+# against these hashed tools instead of fetching an unhashed build environment.
+RUN pip3 install --require-hashes --no-deps -r /tmp/locks/requirements-scgpt-build.txt
+
+# Not --no-deps: if the lock is missing a transitive dependency the build should fail
+# here rather than at job time.
+RUN pip3 install --require-hashes --no-build-isolation \
+        --extra-index-url https://download.pytorch.org/whl/cu117 \
+        -r /tmp/locks/requirements-scgpt.txt
+
+# flash-attn (build-heavy, CUDA-only), compiled against the torch installed above.
+# This is the layer that takes minutes.
+RUN pip3 install --require-hashes --no-build-isolation --no-deps -r /tmp/locks/requirements-scgpt-flashattn.txt
+
+# scGPT pretrained weights. TWO supported paths:
+#   (A) mount them at runtime as a SageMaker 'weights' channel
+#       (launch.py --scgpt-weights-s3 s3://.../  -> /opt/ml/input/data/weights),
+#       which keeps the image lean and lets weights change without a rebuild. In
+#       that case this COPY just carries the placeholder dir (.gitkeep/README) and
+#       /scgpt is unused at runtime.
+#   (B) bake them in: stage the preset dirs under sagemaker/scgpt_weights/ before
+#       building, e.g. sagemaker/scgpt_weights/scGPT_human/{model.pt,args.json,vocab.json},
+#       and point the job at model_root=/scgpt (the default).
+# The COPY always succeeds (the dir exists with at least a .gitkeep), so option A
+# needs no staged weights; a baked run (B) resolves /scgpt/<preset_dir> at runtime.
+COPY sagemaker/scgpt_weights/ /scgpt/
+
+# Install the shared scfm_ft package WITHOUT its dependency set: pyproject's
+# deps pull Geneformer's transformers 5 / datasets 5 stack, which would clash with
+# scGPT's. The package's own code (config, cli, backends) is pure-Python and needs
+# only pydantic/typer/pyyaml/rich + numpy/pandas/loompy, which scgpt's install
+# already provides; the few extra ones (pydantic, typer, rich, pyyaml, loompy, ipython,
+# numpy<2, sagemaker-training) are in requirements-scgpt.txt.
+#
+# Two extras pinned here, both learned from the first g4dn smoke run:
+#   - ipython: scGPT's utils/util.py does an UNCONDITIONAL `from IPython import
+#     get_ipython` (it was written notebook-first), so importing scgpt.tokenizer
+#     fails with ModuleNotFoundError without it.
+#   - numpy<2: torch 2.0.1 (cu117) is compiled against the NumPy 1.x ABI; the
+#     resolver otherwise pulls NumPy 2.x and torch warns "Failed to initialize
+#     NumPy: _ARRAY_API not found", which is fragile. Pin to 1.x for ABI match.
+#
+# --ignore-requires-python: pyproject requires Python 3.11+ so uv.lock carries only
+# the patched pillow/filelock releases, but this image stays on 3.10 for the
+# torch 2.0.1 + flash-attn 1.0.9 + scgpt 0.2.1 stack. The package code is 3.10-safe
+# (ruff targets py310) and installs here with --no-deps, so the lock isn't used.
+WORKDIR /opt/ml/code
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip3 install --no-build-isolation --no-deps --ignore-requires-python .
+
+COPY sagemaker/sm_entry.py /opt/ml/code/sm_entry.py
+
+# Fail the build, rather than ship an image that silently runs without FlashAttention,
+# if a later layer swapped torch or broke flash-attn's compiled extension. This is the
+# exact import scGPT's model.py makes. It loads the extension but needs no GPU.
+RUN python3 -c "import torch; v = torch.__version__; \
+assert v.startswith('2.0.1'), f'torch was replaced: {v} (flash-attn is built for 2.0.1)'; \
+from flash_attn.flash_attention import FlashMHA; \
+import scgpt.model.model as m; \
+assert m.flash_attn_available, 'scgpt cannot import flash-attn'; \
+import torchtext; \
+assert torchtext.__version__.startswith('0.15.2'), torchtext.__version__; \
+print('flash-attn OK with torch', v)"
+
+ENV PATH="/opt/ml/code:${PATH}"

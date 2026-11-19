@@ -1,0 +1,42 @@
+# Example configuration: cell-state classification fine-tuning.
+# Run end to end with:  uv run scfm-ft run --config configs/example_cell.yaml
+
+name: example_cell          # used as output file prefix
+output_dir: outputs/example_cell
+
+input:
+  # Point this at your own labeled AnnData file. The quickstart synthetic file is
+  # produced by:  uv run scfm-ft make-sample-data --out data/sample.loom
+  h5ad_path: data/sample.loom
+
+model:
+  # V1-10M is the default for development: smallest model (input size 2048),
+  # fits a 16 GB GPU and runs on CPU for smoke tests. Promote to V2-104M (A10G/L4,
+  # 24 GB) or V2-316M (A100) for real runs.
+  preset: V1-10M            # one of: V1-10M | V2-104M | V2-316M
+  geneformer_repo: vendor/Geneformer   # cloned HF repo (holds pretrained weights)
+
+classifier:
+  kind: cell                # cell state classifier
+  label_column: cell_type   # column in adata.obs with the class label
+  states: null              # null = use all label values; or a list to restrict
+  rare_threshold: 0.0       # drop classes below this fraction of cells
+  max_ncells: null          # cap total cells (null = all)
+  max_ncells_per_class: null
+
+training:
+  epochs: 1                 # bump to ~10 for real runs
+  learning_rate: 5.0e-5
+  batch_size: 4             # increase on a real GPU (e.g. 12-28)
+  freeze_layers: 0
+  lr_scheduler_type: linear
+  warmup_steps: 100
+  weight_decay: 0.001
+  num_crossval_splits: 1    # 0 = all data, 1 = train/eval split, 5 = 5-fold CV
+  split_sizes: { train: 0.8, valid: 0.1, test: 0.1 }
+  seed: 42
+
+runtime:
+  nproc: 2
+  ngpu: 1                   # set 0 for CPU-only smoke tests
+  forward_batch_size: 50

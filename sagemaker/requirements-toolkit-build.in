@@ -1,0 +1,8 @@
+# Build tools for the two source-only packages in requirements-toolkit.txt (inotify-simple and
+# sagemaker-training), installed with --no-build-isolation so nothing is fetched unhashed at
+# build time. Same constraints file and platform as requirements-toolkit.in. Regenerate:
+#   uv pip compile sagemaker/requirements-toolkit-build.in -c /tmp/constraints.txt \
+#     -o sagemaker/requirements-toolkit-build.txt --python-version 3.11 \
+#     --python-platform x86_64-manylinux_2_35 --generate-hashes --allow-unsafe
+setuptools
+wheel

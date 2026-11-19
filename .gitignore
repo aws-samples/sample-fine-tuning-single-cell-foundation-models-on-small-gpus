@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# uv
+# (uv.lock IS committed on purpose)
+
+# Vendored Geneformer repo (large, cloned via git-lfs at setup time)
+vendor/
+
+# Data and run artifacts
+data/
+outputs/
+*.h5ad
+*.dataset/
+*.npz
+
+# scGPT pretrained weights (large; staged into the image build context, not git)
+sagemaker/scgpt_weights/*
+!sagemaker/scgpt_weights/.gitkeep
+
+# Scratch / local-only
+geneformer-src.zip
+COMBO.md
+
+# OS
+.DS_Store
