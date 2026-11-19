@@ -12,5 +12,5 @@
 # Regenerate requirements-launcher.txt after changing this file:
 #   uv pip compile scripts/requirements-launcher.in --universal --python-version 3.11 \
 #       --generate-hashes -o scripts/requirements-launcher.txt
-sagemaker==2.219.0
+sagemaker==2.257.2
 boto3
